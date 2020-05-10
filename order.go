@@ -13,5 +13,4 @@ type Order struct {
 type OrderReceived struct {
 	Order      Order
 	QueuedTime time.Time
-	PickupTime *time.Timer
 }

@@ -1,5 +1,7 @@
 package main
 
+import "errors"
+
 type Temperature string
 
 const (
@@ -15,3 +17,9 @@ var temperatureLookup = map[string]Temperature{
 	"frozen": Frozen,
 	"any":    Any,
 }
+
+var (
+	ErrInvalidTemperatureLookup = errors.New("InvalidTemperatureLookup")
+	ErrInvalidCapacity          = errors.New("InvalidCapacity")
+	ErrEmptyShelfOrders         = errors.New("EmptyShelf")
+)
