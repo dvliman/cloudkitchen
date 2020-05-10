@@ -1,109 +1,117 @@
 package main
 
 import (
-	"errors"
-	"math/rand"
-	"time"
+	"fmt"
+	"log"
+	"strings"
 )
 
 type Kitchen struct {
-	RateLimiter    <-chan time.Time
-	OrdersReceived chan OrderReceived
-	Shelves        map[Temperature]*Shelf
+	Shelves map[Temperature]*Shelf
 }
 
-func NewKitchen(ordersPerSecond int, removeExpiredOrder bool) Kitchen {
-	k := Kitchen{
-		RateLimiter: time.Tick(time.Second / time.Duration(ordersPerSecond)),
-
+func NewKitchen() Kitchen {
+	return Kitchen{
 		Shelves: map[Temperature]*Shelf{
-			Hot:    {Name: "Hot Shelf", AllowableTemperature: Hot, Capacity: 10},
-			Cold:   {Name: "Cold Shelf", AllowableTemperature: Cold, Capacity: 10},
-			Frozen: {Name: "Frozen Shelf", AllowableTemperature: Frozen, Capacity: 10},
-			Any:    {Name: "Overflow Shelf", AllowableTemperature: Any, Capacity: 15},
+			Hot: {
+				Name:                  "Hot Shelf",
+				AllowableTemperatures: []Temperature{Hot},
+				Capacity:              10,
+			},
+			Cold: {
+				Name:                  "Cold Shelf",
+				AllowableTemperatures: []Temperature{Cold},
+				Capacity:              10,
+			},
+			Frozen: {
+				Name:                  "Frozen Shelf",
+				AllowableTemperatures: []Temperature{Frozen},
+				Capacity:              10,
+			},
+			Any: { // maybe shouldn't map with temperature
+				Name:                  "Overflow Shelf",
+				AllowableTemperatures: []Temperature{},
+				Capacity:              15,
+			},
 		},
 	}
-
-	if removeExpiredOrder {
-		go func() {
-			k.periodicallyRemoveExpiredOrder()
-		}()
-	}
-	return k
 }
 
-func (k Kitchen) AcceptOrders(orders []Order) {
-	for _, order := range orders {
-		<-k.RateLimiter
-
-		k.OrdersReceived <- OrderReceived{
-			Order:      order,
-			QueuedTime: time.Now().UTC(),
-			PickupTime: time.AfterFunc(randomPickupTime(), func() {
-				k.DispenseOrder(order.ID, order.Temp)
-			}),
-		}
-	}
-
-	k.storeToShelves()
-}
-
-func (k Kitchen) periodicallyRemoveExpiredOrder() {
-	ticker := time.NewTicker(time.Minute) // TODO: make this configurable
-	for {
-		select {
-		case <-ticker.C:
-			for _, shelf := range k.Shelves {
-				shelf.ThrowAwayExpiredOrder()
-			}
-		}
-	}
-}
-
-func (k Kitchen) storeToShelves() {
-	for {
-		select {
-		case od := <-k.OrdersReceived:
-			primaryShelf, err := k.selectShelfByTemperature(od.Order.Temp)
-			if err != nil {
-				return
-			}
-
-			if !primaryShelf.IsFull() {
-				primaryShelf.StoreOrder(od)
-				return
-			}
-
-			overflowShelf := k.Shelves[Any]
-			if overflowShelf.IsFull() {
-				overflowShelf.RandomlyDiscardOneOrder()
-			}
-
-			overflowShelf.StoreOrder(od)
-		}
-	}
-}
-
-func (k Kitchen) DispenseOrder(orderID string, orderTemperature string) {
-	shelf, err := k.selectShelfByTemperature(orderTemperature)
+func (k Kitchen) AcceptOrder(order OrderReceived) {
+	firstOptionShelf, err := k.selectShelfByTemperature(order.Order.Temp)
 	if err != nil {
+		log.Printf("AcceptOrder: can not selectShelfByTemperature: "+
+			"order.ID=%s order.Temperature=%s\n", order.Order.ID, order.Order.Temp)
+		k.overflowShelf().PlaceOrder(order)
 		return
 	}
-	shelf.DispenseFood(orderID)
+
+	if !firstOptionShelf.IsFull() {
+		firstOptionShelf.PlaceOrder(order)
+		return
+	}
+
+	if k.overflowShelf().IsFull() {
+		hasRoom := k.canMoveOneOrderToAnotherShelf()
+		if !hasRoom {
+			toDiscard, _ := k.overflowShelf().GetRandomOrderIndex()
+			k.overflowShelf().RemoveOrderAtIndex(toDiscard)
+		}
+	}
+
+	k.overflowShelf().PlaceOrder(order)
+}
+
+func (k Kitchen) canMoveOneOrderToAnotherShelf() bool {
+	for i, order := range k.overflowShelf().Orders {
+		if targetShelf, err := k.selectShelfByTemperature(order.Order.Temp); err != nil && targetShelf != nil {
+			if !targetShelf.IsFull() {
+				targetShelf.PlaceOrder(order)
+				k.overflowShelf().RemoveOrderAtIndex(i)
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (k Kitchen) RemoveExpiredOrders() {
+	for _, shelf := range k.Shelves {
+		shelf.RemoveExpiredOrders()
+	}
+}
+
+func (k Kitchen) PickupOrderByID(orderID string) bool {
+	for _, shelf := range k.Shelves {
+		removed := shelf.RemoveOrderByID(orderID)
+		if removed {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (k Kitchen) selectShelfByTemperature(orderTemperature string) (*Shelf, error) {
 	temperature, found := temperatureLookup[orderTemperature]
 	if !found {
-		return nil, errors.New("selectShelfByTemperature/InvalidTemperatureLookup")
+		return nil, ErrInvalidTemperatureLookup
 	}
 
 	return k.Shelves[temperature], nil
 }
 
-func randomPickupTime() time.Duration {
-	min := 2
-	max := 3
-	random := rand.Intn(max-min) + min
-	return time.Second * time.Duration(random)
+func (k Kitchen) overflowShelf() *Shelf {
+	return k.Shelves[Any]
+}
+
+func (k Kitchen) ShelvesContent() string {
+	var sb strings.Builder
+
+	for _, shelf := range k.Shelves {
+		_, _ = fmt.Fprintf(&sb, "\tShelf: name=%s capacity=%d allowableTemperatures=%s ordersCount=%d orders=%s\n",
+			shelf.Name, shelf.Capacity, shelf.AllowableTemperatures, len(shelf.Orders), shelf.GetOrderIDs())
+	}
+
+	return sb.String()
 }

@@ -1,67 +1,104 @@
 package main
 
-import "math/rand"
+import (
+	"math/rand"
+	"time"
+)
 
 type Shelf struct {
-	Name                 string
-	AllowableTemperature Temperature
-	Capacity             int
-	Orders               []OrderReceived
+	Name                  string
+	AllowableTemperatures []Temperature
+	Capacity              int
+	Orders                []OrderReceived
+}
+
+func NewShelf(name string, allowableTemperature []Temperature, capacity int) (*Shelf, error) {
+	if capacity < 0 {
+		return nil, ErrInvalidCapacity
+	}
+
+	return &Shelf{
+		Name:                  name,
+		AllowableTemperatures: allowableTemperature,
+		Capacity:              capacity,
+		Orders:                []OrderReceived{},
+	}, nil
 }
 
 func (s *Shelf) IsFull() bool {
 	return len(s.Orders) >= s.Capacity
 }
 
-func (s *Shelf) StoreOrder(order OrderReceived) {
-	s.Orders = append(s.Orders, order)
+func (s *Shelf) PlaceOrder(order OrderReceived) {
+	if !s.IsFull() {
+		s.Orders = append(s.Orders, order)
+	}
 }
 
-func (s *Shelf) ThrowAwayExpiredOrder() {
-	s.filter(func(od OrderReceived) bool {
+func (s *Shelf) RemoveExpiredOrders() {
+	s.filter(func(_ int, od OrderReceived) bool {
 		return s.computeShelfLife(od) > 0
 	})
 }
 
-func (s *Shelf) DispenseFood(orderID string) {
-	s.filter(func(od OrderReceived) bool {
+func (s *Shelf) RemoveOrderByID(orderID string) bool {
+	return s.filter(func(_ int, od OrderReceived) bool {
 		return od.Order.ID != orderID
 	})
 }
 
-func (s *Shelf) RandomlyDiscardOneOrder() {
-	s.DispenseFood(s.selectRandomOrderID())
+func (s *Shelf) RemoveOrderAtIndex(index int) bool {
+	return s.filter(func(i int, od OrderReceived) bool {
+		return i != index
+	})
 }
 
-func (s *Shelf) selectRandomOrderID() string {
-	random := rand.Intn(len(s.Orders))
-	return s.Orders[random].Order.ID
+func (s *Shelf) GetRandomOrderIndex() (int, error) {
+	if len(s.Orders) == 0 {
+		return 0, ErrEmptyShelfOrders
+	}
+	return rand.Intn(len(s.Orders)), nil
 }
 
-func (s *Shelf) filter(predicate func(OrderReceived) bool) {
+func (s *Shelf) filter(predicate func(int, OrderReceived) bool) bool {
 	var xs []OrderReceived
 
-	for _, x := range s.Orders {
-		if predicate(x) {
+	for i, x := range s.Orders {
+		if predicate(i, x) {
 			xs = append(xs, x)
 		}
 	}
 
+	before := len(s.Orders)
 	s.Orders = xs
+	after := len(s.Orders)
+
+	return (before - after) > 0 // any filtered?
 }
 
 func (s *Shelf) decayModifier() int {
-	if s.AllowableTemperature == Any {
-		return 2
+	if len(s.AllowableTemperatures) == 1 {
+		return 1
 	}
 
-	return 1
+	return 2
 }
 
-func (s *Shelf) computeShelfLife(receivedOrder OrderReceived) float64 {
+func (s *Shelf) computeShelfLife(receivedOrder OrderReceived) int {
 	order := receivedOrder.Order
-	orderAge := receivedOrder.QueuedTime.Unix()
+	orderAge := time.Since(receivedOrder.QueuedTime).Seconds() // nanoseconds
 
-	return (float64(order.ShelfLife) - order.DecayRate) * float64(orderAge) * float64(s.decayModifier()) /
-		float64(order.ShelfLife)
+	lifeWithDecay := float64(order.ShelfLife) - order.DecayRate
+	lifeDecayedInTheShelf := lifeWithDecay * orderAge * float64(s.decayModifier())
+	actualShellLife := lifeDecayedInTheShelf / float64(order.ShelfLife)
+	// fmt.Printf("float-value: %b, float-to-int: %d\n", actualShellLife, int(actualShellLife))
+	return int(actualShellLife)
+}
+
+func (s *Shelf) GetOrderIDs() []string {
+	var xs []string
+	for _, order := range s.Orders {
+		xs = append(xs, order.Order.ID)
+	}
+	return xs
 }
